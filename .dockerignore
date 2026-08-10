@@ -1,0 +1,23 @@
+# Version control / IDE
+.git/
+.idea/
+.vscode/
+
+# Python caches / build artifacts
+**/__pycache__/
+**/*.pyc
+**/*.egg-info/
+build/
+dist/
+
+# Datasets, checkpoints and outputs -- mount these at runtime instead of
+# baking them into the image
+datasets/
+data_ann/
+ckpts/
+work_dirs/
+*.pth
+*.pkl
+
+# Docs / misc not needed for the build
+resources/
