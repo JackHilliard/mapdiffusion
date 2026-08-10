@@ -168,7 +168,22 @@ class MapDiffusion(BaseMapperDiffuse):
 
         return gts
 
-    def forward_train(self, coef, total_steps, img, vectors, gts,  img_metas=None, points=None, **kwargs):
+    @staticmethod
+    def _batch_device(img, points):
+        '''Device and batch size of the current batch.
+
+        Both used to come off `img`, which is absent on a LiDAR-only run:
+        the pipeline never produces an `img` key, so it never reaches
+        `forward_train`/`forward_test` as a kwarg either.
+        '''
+        if img is not None:
+            return img.device, img.shape[0]
+        assert points is not None, \
+            'batch has neither img nor points'
+        return points[0].device, len(points)
+
+    def forward_train(self, coef, total_steps, img=None, vectors=None, gts=None,
+                      img_metas=None, points=None, **kwargs):
         '''
         Args:
             img: torch.Tensor of shape [B, N, 3, H, W]
@@ -184,14 +199,12 @@ class MapDiffusion(BaseMapperDiffuse):
         Out:
             loss, log_vars, num_sample
         '''
-        device = img.device
+        device, bs = self._batch_device(img, points)
         inputs = self.rerange_gts(gts) # from [bs, keys 0/1/2] to [lines/labels, bs, k, num_points, num_coords]
         #  prepare labels and images
 
         gts, img, img_metas, valid_idx, points = self.batch_data(
-            vectors, img, img_metas, img.device, points)
-        
-        bs = img.shape[0]
+            vectors, img, img_metas, device, points)
 
         # Backbone
         _bev_feats = self.backbone(img, img_metas=img_metas, points=points)
@@ -219,31 +232,31 @@ class MapDiffusion(BaseMapperDiffuse):
         log_vars = {k: v.item() for k, v in loss_dict.items()}
         log_vars.update({'total': loss.item()})
 
-        num_sample = img.size(0)
+        num_sample = bs
 
         return loss, log_vars, num_sample
 
     @torch.no_grad()
-    def forward_test(self, timestep, eta, coef, sampling_timesteps, query_threshold, img, points=None, img_metas=None, **kwargs):
+    def forward_test(self, timestep, eta, coef, sampling_timesteps, query_threshold, img=None, points=None, img_metas=None, **kwargs):
         '''
             inference pipeline
         '''
 
         #  prepare labels and images
-        
+
         tokens = []
         for img_meta in img_metas:
             tokens.append(img_meta['token'])
 
+        device, _ = self._batch_device(img, points)
         _bev_feats = self.backbone(img, img_metas, points=points)
         img_shape = [_bev_feats.shape[2:] for i in range(_bev_feats.shape[0])]
 
         if self.streaming_bev:
             self.bev_memory.eval()
             _bev_feats = self.update_bev_feature(_bev_feats, img_metas)
-            
+
         # Neck
-        device = img.device
         bev_feats = self.neck(_bev_feats)
         times = torch.linspace(0, timestep, steps=sampling_timesteps + 1)
         times = list(reversed(times.int().tolist()))

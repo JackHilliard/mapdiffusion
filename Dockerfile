@@ -69,6 +69,28 @@ RUN MMCV_WITH_OPS=1 pip install --no-cache-dir --no-binary mmcv-full "mmcv-full=
 RUN sed -i \
     "s/streams = \[_get_stream(device) for device in target_gpus\]/streams = [_get_stream(torch.device('cuda', device) if isinstance(device, int) else device) for device in target_gpus]/" \
     /opt/conda/lib/python3.10/site-packages/mmcv/parallel/_functions.py
+# Same class of breakage in mmcv 1.7.2's MMDistributedDataParallel:
+# _run_ddp_forward() reads self._use_replicated_tensor_module and
+# self._replicated_tensor_module, part of torch's ReplicatedTensor
+# experiment, which torch 2.1 removed -- so any distributed *forward* dies
+# with `AttributeError: 'MMDistributedDataParallel' object has no attribute
+# '_use_replicated_tensor_module'`. That is the path tools/dist_test.sh
+# takes (custom_multi_gpu_test_diffuse calls model(...) directly);
+# distributed training is unaffected, because mmcv's train_step calls
+# self.module.train_step() without going through _run_ddp_forward.
+# Collapse the conditional to self.module, which is what it selects on
+# torch 2.x anyway.
+RUN python - <<'PY'
+import pathlib
+p = pathlib.Path('/opt/conda/lib/python3.10/site-packages/mmcv/parallel/'
+                 'distributed.py')
+old = ("        module_to_run = self._replicated_tensor_module if \\\n"
+       "            self._use_replicated_tensor_module else self.module\n")
+new = "        module_to_run = self.module\n"
+src = p.read_text()
+assert old in src, 'mmcv distributed.py not in the expected shape'
+p.write_text(src.replace(old, new))
+PY
 RUN pip install --no-cache-dir mmdet==2.28.2 mmsegmentation==0.30.0
 
 # mmdetection3d v1.0.0rc6, the version README.md pins. Not vendored in this
@@ -102,6 +124,25 @@ RUN cd /workspace/mmdetection3d \
 RUN sed -i "s/mmcv_maximum_version = '1.7.0'/mmcv_maximum_version = '1.7.2'/" \
         /workspace/mmdetection3d/mmdet3d/__init__.py
 RUN cd /workspace/mmdetection3d && pip install --no-cache-dir -e .
+
+# spconv2, for the LiDAR branch's SparseEncoder. mmcv 1.7.2 vendors the
+# legacy spconv 1.x CUDA kernels and mmdet3d falls back to them
+# (mmdet3d/models/middle_encoders/sparse_encoder.py imports SparseConvTensor
+# from mmcv.ops unless spconv>=2 is importable) -- but those kernels are
+# incompatible with CUDA 11.8 / sm_86+90 and fail on *every* input, including
+# a 5000-voxel toy tensor on a 250x250x41 grid:
+#   RuntimeError: mmcv/ops/csrc/pytorch/cuda/sparse_indice.cu 126
+#   cuda execution failed with error 2
+# Verified not to be an out-of-memory error: the same failure occurs at
+# every sparse_shape tried, down to 64x64x420, with 3.5 GB free.
+#
+# No code shim is needed here, unlike the sibling GeMap/MapTR trees (whose
+# vendored mmdet3d 0.17.2 predates this): mmdet3d 1.0.0rc6's
+# mmdet3d/ops/spconv/__init__.py detects an importable spconv>=2.0.0 and
+# calls register_spconv2(), which re-registers SparseConv3d/SubMConv3d into
+# mmcv's CONV_LAYERS with force=True. Installing the package is the whole
+# fix. Same version the sibling images pin.
+RUN pip install --no-cache-dir spconv-cu118==2.3.8
 
 RUN conda clean --all
 
