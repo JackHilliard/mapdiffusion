@@ -36,11 +36,18 @@ class VectorEvaluate(object):
         self.n_workers = n_workers
         self.new_split = 'newsplit' in self.dataset.ann_file
         self.roi_size = self.dataset.roi_size
-        if self.roi_size == (60, 30):
-            self.thresholds = [0.5, 1.0, 1.5]
-        elif self.roi_size == (100, 50):
+        if self.roi_size == (100, 50):
+            # AV2's larger ROI, whose elements are correspondingly further
+            # apart; everything else uses the standard chamfer thresholds.
             self.thresholds = [1.0, 1.5, 2.0]
-        
+        else:
+            # (60, 30) nuScenes, (25, 25) CARLA tiles, and any other ROI.
+            # Previously only the two known sizes were handled and every
+            # other one left self.thresholds unset, so evaluate() died with
+            # AttributeError after the whole inference pass had run.
+            self.thresholds = THRESHOLDS
+
+
     @cached_property
     def gts(self) -> Dict[str, Dict[int, List[NDArray]]]:
         roi_size = self.dataset.roi_size
@@ -48,10 +55,17 @@ class VectorEvaluate(object):
             dataset = 'av2'
         else:
             dataset = 'nusc'
+        # The annotation file's own name is part of the cache key, not just
+        # (dataset, roi_size): two splits of the same dataset at the same ROI
+        # otherwise share one cache file and the second one silently scores
+        # against the first one's GT. CARLA's train and test splits are
+        # exactly that case -- both 25x25, both labelled 'nusc' by the guess
+        # above.
+        stem = os.path.splitext(os.path.basename(self.dataset.ann_file))[0]
         if self.new_split:
-            tmp_file = f'./tmp_gts_{dataset}_{roi_size[0]}x{roi_size[1]}_newsplit.pkl'
+            tmp_file = f'./tmp_gts_{dataset}_{stem}_{roi_size[0]}x{roi_size[1]}_newsplit.pkl'
         else:
-            tmp_file = f'./tmp_gts_{dataset}_{roi_size[0]}x{roi_size[1]}.pkl'
+            tmp_file = f'./tmp_gts_{dataset}_{stem}_{roi_size[0]}x{roi_size[1]}.pkl'
         if os.path.exists(tmp_file):
             print(f'loading cached gts from {tmp_file}')
             gts = mmcv.load(tmp_file)
