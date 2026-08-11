@@ -26,7 +26,8 @@ from mmdet.utils import get_root_logger
 import time
 import os.path as osp
 from ...datasets.builder import build_dataloader
-from ..evaluation.eval_hooks import CustomDistEvalHookDiffuse
+from ..evaluation.eval_hooks import (CustomDistEvalHookDiffuse,
+                                     CustomEvalHookDiffuse)
 from ...models.utils.coef import forward_steps
 
 def custom_train_detector_diffuse(model,
@@ -182,7 +183,12 @@ def custom_train_detector_diffuse(model,
         eval_cfg = cfg.get('evaluation', {})
         eval_cfg['by_epoch'] = cfg.runner['type'] != 'IterBasedRunner'
         eval_cfg['jsonfile_prefix'] = osp.join('val', cfg.work_dir, time.ctime().replace(' ','_').replace(':','_'))
-        eval_hook = CustomDistEvalHookDiffuse if distributed else EvalHook
+        # Both variants take (dataloader, coef, total_steps, **eval_cfg).
+        # mmdet's stock EvalHook used to be the non-distributed fallback,
+        # but it has no diffusion parameters, so coef/total_steps landed
+        # in start/interval and it raised before training began.
+        eval_hook = (CustomDistEvalHookDiffuse if distributed
+                     else CustomEvalHookDiffuse)
         runner.register_hook(eval_hook(val_dataloader, coef, total_steps, **eval_cfg), priority='LOW')
 
     # user-defined hooks

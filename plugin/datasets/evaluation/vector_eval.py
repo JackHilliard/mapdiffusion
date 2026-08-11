@@ -18,7 +18,20 @@ from IPython import embed
 
 INTERP_NUM = 200 # number of points to interpolate during evaluation
 THRESHOLDS = [0.5, 1.0, 1.5] # AP thresholds
-N_WORKERS = 16 # num workers to parallel
+# Evaluate serially by default. The multiprocessing.Pool below forks, and
+# evaluation runs inside a process that has already initialised CUDA, loaded
+# the model and spun up dataloader workers -- so the children inherit mutexes
+# (CUDA, OpenMP, pin_memory) locked by threads that do not exist in the fork,
+# and block on them forever. Observed as a real deadlock, not slowness: after
+# 40 minutes the parent and all 16 children sat in futex_wait_queue_me at 0%
+# CPU. It is a race, so it can appear to work -- it survived one distributed
+# run here before hanging two single-GPU ones.
+#
+# The pool bought almost nothing anyway: on the 259-tile CARLA test split,
+# 134s with 16 workers vs 147s serial (~9%), because the per-class loop is
+# what is parallelised and this dataset has one class. Set this >0 (or pass
+# n_workers=) to opt back in.
+N_WORKERS = 0 # num workers to parallel; 0 = serial, see above
 SAMPLE_DIST = 0.15
 
 class VectorEvaluate(object):

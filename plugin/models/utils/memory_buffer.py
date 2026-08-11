@@ -40,6 +40,16 @@ class StreamTensorMemory(object):
         '''
         img_metas: list[img_metas]
         '''
+        # The buffer holds one slot per sample in the batch, and those slots
+        # persist across iterations, so its size is fixed at construction
+        # from streaming_cfg.batch_size -- it cannot follow a batch that is
+        # a different size. Overriding data.samples_per_gpu on its own (e.g.
+        # from a job script) is the usual way to get here, and without this
+        # check it surfaces as a bare IndexError several frames away.
+        assert len(img_metas) == self.bs, (
+            f'streaming memory is sized for {self.bs} sample(s) but got a '
+            f'batch of {len(img_metas)}. model.streaming_cfg.batch_size must '
+            'equal data.samples_per_gpu -- set both, or neither.')
 
         tensor_list = []
         img_metas_list = []

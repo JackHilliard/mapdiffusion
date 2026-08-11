@@ -227,6 +227,7 @@ def main():
         )
     
     from plugin.core.apis.test import custom_multi_gpu_test_diffuse as multi_gpu_test
+    from plugin.core.apis.test import custom_single_gpu_test_diffuse
     # build the model and load checkpoint
     cfg.model.train_cfg = None
     model = build_model(cfg.model, test_cfg=cfg.get('test_cfg'))
@@ -252,7 +253,12 @@ def main():
         model = fuse_conv_bn(model)
     if not distributed:
         model = MMDataParallel(model, device_ids=[0])
-        outputs = single_gpu_test(model, data_loader, total_steps, coef, eta, sampling_timesteps, query_threshold, args.show, args.show_dir)
+        # mmdet3d's stock single_gpu_test takes (model, data_loader, show,
+        # out_dir, ...) and has nowhere to put the diffusion parameters, so
+        # this call used to die with "single_gpu_test() takes from 2 to 5
+        # positional arguments but 9 were given" -- i.e. the non-distributed
+        # test path had never been run against the diffusion model.
+        outputs = custom_single_gpu_test_diffuse(model, data_loader, total_steps, coef, eta, sampling_timesteps, query_threshold)
     else:
         model = MMDistributedDataParallel(
             model.cuda(),

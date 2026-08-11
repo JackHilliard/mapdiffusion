@@ -98,4 +98,74 @@ class CustomDistEvalHookDiffuse(BaseDistEvalHook):
 
             if self.save_best:
                 self._save_ckpt(runner, key_score)
-  
+
+
+class CustomEvalHookDiffuse(BaseEvalHook):
+    """Single-GPU counterpart of :class:`CustomDistEvalHookDiffuse`.
+
+    ``custom_train_detector_diffuse`` used to fall back to mmdet's stock
+    ``EvalHook`` whenever ``distributed`` was False, but that class knows
+    nothing about the diffusion parameters this model needs, so the
+    ``eval_hook(val_dataloader, coef, total_steps, **eval_cfg)`` call landed
+    ``coef`` in ``start`` and ``total_steps`` in ``interval`` and then died
+    with ``TypeError: EvalHook.__init__() got multiple values for argument
+    'interval'``. That made training with validation impossible under
+    ``--launcher none``.
+
+    Everything here mirrors the distributed hook except the test function
+    and the absence of rank/BN-buffer handling.
+    """
+
+    def __init__(self, val_dataloader, coef, total_steps, *args,
+                 dynamic_intervals=None, **kwargs):
+        super(CustomEvalHookDiffuse, self).__init__(val_dataloader, *args,
+                                                    **kwargs)
+        self.coef = coef
+        self.total_steps = total_steps
+        self.eta = float(kwargs['eval_diffusion_eta']) if 'eval_diffusion_eta' in kwargs.keys() else None
+        self.sampling_timesteps = int(kwargs['eval_diffusion_sampling_timesteps']) if 'eval_diffusion_sampling_timesteps' in kwargs.keys() else None
+        self.query_threshold = float(kwargs['eval_diffusion_query_threshold']) if 'eval_diffusion_query_threshold' in kwargs.keys() else None
+        self.use_dynamic_intervals = dynamic_intervals is not None
+        if self.use_dynamic_intervals:
+            self.dynamic_milestones, self.dynamic_intervals = \
+                _calc_dynamic_intervals(self.interval, dynamic_intervals)
+
+    def _decide_interval(self, runner):
+        if self.use_dynamic_intervals:
+            progress = runner.epoch if self.by_epoch else runner.iter
+            step = bisect.bisect(self.dynamic_milestones, (progress + 1))
+            # Dynamically modify the evaluation interval
+            self.interval = self.dynamic_intervals[step - 1]
+
+    def before_train_epoch(self, runner):
+        """Evaluate the model only at the start of training by epoch."""
+        self._decide_interval(runner)
+        super().before_train_epoch(runner)
+
+    def before_train_iter(self, runner):
+        self._decide_interval(runner)
+        super().before_train_iter(runner)
+
+    def _do_evaluate(self, runner):
+        """perform evaluation and save ckpt."""
+        if not self._should_evaluate(runner):
+            return
+
+        from ..apis.test import custom_single_gpu_test_diffuse  # circular import
+
+        results = custom_single_gpu_test_diffuse(
+            runner.model,
+            self.dataloader,
+            self.total_steps,
+            self.coef,
+            self.eta,
+            self.sampling_timesteps,
+            self.query_threshold)
+        print('\n')
+        runner.log_buffer.output['eval_iter_num'] = len(self.dataloader)
+
+        key_score = self.evaluate(runner, results)
+
+        if self.save_best:
+            self._save_ckpt(runner, key_score)
+

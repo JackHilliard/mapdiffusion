@@ -42,6 +42,67 @@ def custom_encode_mask_results(mask_results):
                         dtype='uint8'))[0])  # encoded with RLE
     return [encoded_mask_results]
 
+def custom_single_gpu_test_diffuse(model, data_loader, t, coef, eta,
+                                   sampling_timesteps, query_threshold,
+                                   **kwargs):
+    """Test the diffusion model on a single GPU.
+
+    The non-distributed counterpart of
+    :func:`custom_multi_gpu_test_diffuse`: same sampling call, no cross-rank
+    collection. It exists because mmdet's stock ``single_gpu_test`` has no
+    way to pass the diffusion parameters, so training with validation under
+    ``--launcher none`` had no usable eval path at all.
+
+    ``**kwargs`` swallows ``tmpdir``/``gpu_collect``, which the eval hook
+    passes uniformly to both variants and which mean nothing here.
+
+    Args:
+        model (nn.Module): Model to be tested.
+        data_loader (nn.Dataloader): Pytorch data loader.
+        t (int): total diffusion steps.
+        coef (dict): DDPM coefficients.
+        eta, sampling_timesteps, query_threshold: DDIM sampling parameters.
+
+    Returns:
+        list: The prediction results.
+    """
+    print(f"Performing evaluation with diffusion parameters eta {eta}, "
+          f"sampling_timesteps {sampling_timesteps}, "
+          f"query_threshold {query_threshold}")
+    model.eval()
+    bbox_results = []
+    mask_results = []
+    dataset = data_loader.dataset
+    prog_bar = mmcv.ProgressBar(len(dataset))
+    have_mask = False
+    for data in data_loader:
+        with torch.no_grad():
+            result = model(timestep=t, coef=coef, eta=eta,
+                           sampling_timesteps=sampling_timesteps,
+                           query_threshold=query_threshold,
+                           return_loss=False, rescale=True, **data)
+            if isinstance(result, dict):
+                if 'bbox_results' in result.keys():
+                    bbox_result = result['bbox_results']
+                    batch_size = len(result['bbox_results'])
+                    bbox_results.extend(bbox_result)
+                if 'mask_results' in result.keys() and \
+                        result['mask_results'] is not None:
+                    mask_results.extend(
+                        custom_encode_mask_results(result['mask_results']))
+                    have_mask = True
+            else:
+                batch_size = len(result)
+                bbox_results.extend(result)
+
+        for _ in range(batch_size):
+            prog_bar.update()
+
+    if not have_mask:
+        return bbox_results
+    return {'bbox_results': bbox_results, 'mask_results': mask_results}
+
+
 def custom_multi_gpu_test_diffuse(model, data_loader, t, coef, eta, sampling_timesteps, query_threshold, tmpdir=None, gpu_collect=False):
     """Test model with multiple gpus.
     This method tests model with multiple gpus and collects the results

@@ -105,6 +105,24 @@ def main():
     cfg = Config.fromfile(args.config)
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
+
+    # The streaming BEV memory holds one slot per sample in the batch, so
+    # model.streaming_cfg.batch_size must always equal data.samples_per_gpu.
+    # The configs set both from one `batch_size` variable, but --cfg-options
+    # merges after the config is evaluated, so overriding data.samples_per_gpu
+    # alone (the natural thing to do from a job script) would leave the buffer
+    # sized for the old batch. Derive it here instead of asking callers to
+    # remember to set both.
+    streaming_cfg = cfg.model.get('streaming_cfg') if 'model' in cfg else None
+    if streaming_cfg is not None and 'batch_size' in streaming_cfg:
+        samples_per_gpu = cfg.data.get('samples_per_gpu')
+        if samples_per_gpu is not None and \
+                streaming_cfg['batch_size'] != samples_per_gpu:
+            print(f'[cfg] syncing model.streaming_cfg.batch_size '
+                  f'{streaming_cfg["batch_size"]} -> {samples_per_gpu} to '
+                  'match data.samples_per_gpu')
+            streaming_cfg['batch_size'] = samples_per_gpu
+
     # import modules from string list.
     if cfg.get('custom_imports', None):
         from mmcv.utils import import_modules_from_strings

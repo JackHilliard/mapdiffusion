@@ -1,1 +1,1 @@
-from .eval_hooks import CustomDistEvalHookDiffuse
+from .eval_hooks import CustomDistEvalHookDiffuse, CustomEvalHookDiffuse
