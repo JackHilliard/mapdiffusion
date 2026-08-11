@@ -18,10 +18,10 @@ plugin = True
 # plugin code dir
 plugin_dir = 'plugin/'
 
-num_gpus = 8
-batch_size = 1
+num_gpus = 1
+batch_size = 16
 # 4103 CARLA train tiles (was 27846 nuScenes samples)
-num_iters_per_epoch = 4103 // (num_gpus * batch_size)
+num_iters_per_epoch = 26000 // (num_gpus * batch_size)
 num_epochs = 24
 num_epochs_single_frame = num_epochs // 24
 total_iters = num_epochs * num_iters_per_epoch
