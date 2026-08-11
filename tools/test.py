@@ -92,7 +92,10 @@ def parse_args():
         type=float,
         default=0.4,
         help='score threshold to filter predictions')
-    parser.add_argument('--local_rank', type=int, default=0)
+    # torch>=2.0's torch.distributed.launch/torchrun passes the hyphenated
+    # spelling, so accepting only '--local_rank' makes dist_test.sh fail
+    # with "unrecognized arguments: --local-rank=0" before anything runs.
+    parser.add_argument('--local_rank', '--local-rank', type=int, default=0)
     args = parser.parse_args()
     if 'LOCAL_RANK' not in os.environ:
         os.environ['LOCAL_RANK'] = str(args.local_rank)

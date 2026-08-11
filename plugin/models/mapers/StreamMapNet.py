@@ -146,10 +146,25 @@ class StreamMapNet(BaseMapper):
         
         return fused_feats
 
-    def forward_train(self, img, vectors, points=None, img_metas=None, **kwargs):
+    @staticmethod
+    def _batch_device(img, points):
+        '''Device and batch size of the current batch.
+
+        Both used to come off `img`, which is absent on a LiDAR-only run:
+        the pipeline never produces an `img` key, so it never reaches
+        `forward_train`/`forward_test` as a kwarg either.
+        '''
+        if img is not None:
+            return img.device, img.shape[0]
+        assert points is not None, \
+            'batch has neither img nor points'
+        return points[0].device, len(points)
+
+    def forward_train(self, img=None, vectors=None, points=None, img_metas=None, **kwargs):
         '''
         Args:
-            img: torch.Tensor of shape [B, N, 3, H, W]
+            img: torch.Tensor of shape [B, N, 3, H, W], or None on a
+                LiDAR-only run
                 N: number of cams
             vectors: list[list[Tuple(lines, length, label)]]
                 - lines: np.array of shape [num_points, 2]. 
@@ -164,10 +179,9 @@ class StreamMapNet(BaseMapper):
         '''
         #  prepare labels and images
 
+        device, bs = self._batch_device(img, points)
         gts, img, img_metas, valid_idx, points = self.batch_data(
-            vectors, img, img_metas, img.device, points)
-        
-        bs = img.shape[0]
+            vectors, img, img_metas, device, points)
 
         # Backbone
         _bev_feats = self.backbone(img, img_metas=img_metas, points=points)
@@ -194,12 +208,12 @@ class StreamMapNet(BaseMapper):
         log_vars = {k: v.item() for k, v in loss_dict.items()}
         log_vars.update({'total': loss.item()})
 
-        num_sample = img.size(0)
+        num_sample = bs
 
         return loss, log_vars, num_sample
 
     @torch.no_grad()
-    def forward_test(self, img, points=None, img_metas=None, **kwargs):
+    def forward_test(self, img=None, points=None, img_metas=None, **kwargs):
         '''
             inference pipeline
         '''

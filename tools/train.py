@@ -76,7 +76,10 @@ def parse_args():
         choices=['none', 'pytorch', 'slurm', 'mpi'],
         default='none',
         help='job launcher')
-    parser.add_argument('--local_rank', type=int, default=0)
+    # torch>=2.0's torch.distributed.launch/torchrun passes the hyphenated
+    # spelling, so accepting only '--local_rank' makes dist_train.sh fail
+    # with "unrecognized arguments: --local-rank=0" before anything runs.
+    parser.add_argument('--local_rank', '--local-rank', type=int, default=0)
     parser.add_argument(
         '--autoscale-lr',
         action='store_true',
