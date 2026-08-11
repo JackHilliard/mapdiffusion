@@ -34,10 +34,12 @@ import torch
 from mmdet3d.models.builder import build_middle_encoder
 from mmdet3d.ops import Voxelization
 
-# Must match plugin/configs/mapdiffusion_carla_lidar.py.
-LIDAR_POINT_CLOUD_RANGE = [-12.5, -12.5, -72.0, 12.5, 12.5, 96.0]
+# Must match plugin/configs/mapdiffusion_carla_lidar*.py. The xy half-extent
+# is the export's tile_radius and is set from --tile-radius; z is fixed.
+LIDAR_Z_RANGE = (-72.0, 96.0)
 LIDAR_VOXEL_SIZE = [0.1, 0.1, 0.4]
 Z_MAX = 96.0
+LIDAR_POINT_CLOUD_RANGE = None  # set in main() from --tile-radius
 
 # ITU-R BT.709 luma, matching LoadCarlaPointsFromFile's rgb->strength.
 RGB2GRAY = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
@@ -172,15 +174,25 @@ def grid_sample(points, pc_range, cell):
 
 
 def main():
+    global LIDAR_POINT_CLOUD_RANGE
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-root', default='./datasets/carla')
     parser.add_argument('--split', default='train')
+    parser.add_argument(
+        '--tile-radius',
+        type=float,
+        default=12.5,
+        help="half the export's tile side, i.e. the config's tile_radius "
+        '(12.5 for the 25m export, 15.0 for a 30m one)')
     parser.add_argument(
         '--tiles',
         nargs='+',
         default=['town01_tile_00000', 'town03_tile_00100'],
         help='tile names to probe with real data')
     args = parser.parse_args()
+
+    r = args.tile_radius
+    LIDAR_POINT_CLOUD_RANGE = [-r, -r, LIDAR_Z_RANGE[0], r, r, LIDAR_Z_RANGE[1]]
 
     nx, ny, nz = grid_size(LIDAR_POINT_CLOUD_RANGE, LIDAR_VOXEL_SIZE)
     sparse_shape = [nz, ny, nx]        # stock order: (z, y, x)

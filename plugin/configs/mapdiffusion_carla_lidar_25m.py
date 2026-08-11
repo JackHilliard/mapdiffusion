@@ -1,5 +1,9 @@
 # MapDiffusion with a LiDAR-only BEV encoder, on the CARLA tile dataset.
 #
+# The 25m-tile variant of mapdiffusion_carla_lidar.py, differing from it by
+# the single `tile_radius` line below -- everything geometric is derived from
+# it. This is the export the LiDAR path was brought up and verified against.
+#
 # Derived from plugin/configs/mapdiffusion.py. Everything downstream of the
 # BEV feature -- the MapDiffusion mapper, MapDetectorHeadDiffuse, the
 # diffusion schedule and DDIM eval, streaming fusion, losses, assigner -- is
@@ -46,8 +50,8 @@ num_class = max(list(cat2id.values())) + 1
 # and the encoder's sparse_shape. CarlaDataset asserts it against the
 # `tile_radius` recorded in the annotation pkl, so a mismatched pkl fails
 # loudly rather than silently rescaling every map element.
-# See mapdiffusion_carla_lidar_25m.py for the 25m export (tile_radius 12.5).
-tile_radius = 15.0
+# This is the 25m export; see mapdiffusion_carla_lidar.py for the 30m one.
+tile_radius = 12.5
 roi_size = (2 * tile_radius, 2 * tile_radius) # bev range, one square tile
 bev_h = 100
 bev_w = 100
