@@ -23,7 +23,7 @@ Run inside the container, with the CARLA dataset mounted:
 
     docker run --rm --runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all \\
       -e PYTHONPATH=/workspace/mapdiffusion -w /workspace/mapdiffusion \\
-      -v /path/to/carla:/workspace/mapdiffusion/datasets/carla \\
+      -v /path/to/carla:/workspace/mapdiffusion/data/carla \\
       mapdiffusion:latest python tools/misc/probe_lidar_encoder.py
 """
 import argparse
@@ -176,7 +176,7 @@ def grid_sample(points, pc_range, cell):
 def main():
     global LIDAR_POINT_CLOUD_RANGE
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data-root', default='./datasets/carla')
+    parser.add_argument('--data-root', default='./data/carla')
     parser.add_argument('--split', default='train')
     parser.add_argument(
         '--tile-radius',

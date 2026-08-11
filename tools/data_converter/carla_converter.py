@@ -73,7 +73,7 @@ and listed in a sidecar report. Every kept sample records its own count, so
 Usage::
 
     python tools/data_converter/carla_converter.py \\
-        --data-root ./datasets/carla --out-dir ./datasets/carla --split train
+        --data-root ./data/carla --out-dir ./data/carla_infos --split train
 """
 
 import argparse
@@ -115,8 +115,9 @@ def parse_args():
     parser.add_argument(
         '--out-dir',
         type=str,
-        default='./datasets/carla',
-        help='output directory for the generated pkl')
+        default='./data/carla_infos',
+        help='output directory for the generated pkl. Kept apart from '
+        '--data-root by default so the tile export can stay read-only')
     parser.add_argument(
         '--split',
         type=str,

@@ -201,14 +201,19 @@ RUN OPENCV_VERSION=$(pip show opencv-python | sed -n 's/^Version: //p') \
     && pip uninstall -y opencv-python opencv-python-headless \
     && pip install --no-cache-dir "opencv-python-headless==${OPENCV_VERSION}"
 
-RUN mkdir -p datasets ckpts work_dirs
+RUN mkdir -p data datasets ckpts work_dirs
 
-# The configs use relative paths (data_root='./datasets/nuScenes'), so
-# mount the dataset at that path inside the workdir, e.g.:
+# The configs use relative paths, so mount each dataset at the path its
+# config names, inside the workdir. Two roots, because the upstream nuScenes
+# configs say ./datasets/nuScenes while the CARLA ones say ./data/carla
+# (matching the sibling GeMap/MapTRv2 trees):
 #   docker run --gpus all -it --shm-size=16g \
 #     -v /path/to/nuScenes:/workspace/mapdiffusion/datasets/nuScenes \
+#     -v /path/to/carla:/workspace/mapdiffusion/data/carla \
 #     -v /path/to/work_dirs:/workspace/mapdiffusion/work_dirs \
 #     mapdiffusion:latest
+# The CARLA annotation pkls are written to ./data/carla_infos, kept apart
+# from the tile export so that can stay mounted read-only.
 # --shm-size matters: the default 64 MB is not enough for the dataloader
 # workers this repo's configs use.
 CMD ["/bin/bash"]

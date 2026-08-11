@@ -12,6 +12,7 @@ dist/
 
 # Datasets, checkpoints and outputs -- mount these at runtime instead of
 # baking them into the image
+data/
 datasets/
 data_ann/
 ckpts/

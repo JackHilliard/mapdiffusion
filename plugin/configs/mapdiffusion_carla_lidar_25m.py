@@ -346,8 +346,8 @@ test_pipeline = [
 # Where the CARLA tiles live (blocks/ + reference_lines/ under <split>/),
 # and where carla_converter.py wrote the annotation pkls. Kept apart so the
 # tile export can stay read-only.
-data_root = './datasets/carla'
-ann_root = './datasets/carla_infos'
+data_root = './data/carla'
+ann_root = './data/carla_infos'
 
 # configs for evaluation code
 # DO NOT CHANGE
