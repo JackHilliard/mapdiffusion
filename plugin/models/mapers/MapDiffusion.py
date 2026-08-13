@@ -21,6 +21,7 @@ class MapDiffusion(BaseMapperDiffuse):
                  backbone_cfg=dict(),
                  head_cfg=dict(),
                  neck_cfg=None,
+                 aux_seg_cfg=None,
                  model_name=None, 
                  streaming_cfg=dict(),
                  pretrained=None,
@@ -40,8 +41,15 @@ class MapDiffusion(BaseMapperDiffuse):
 
         self.head = build_head(head_cfg)
         self.num_decoder_layers = self.head.transformer.decoder.num_layers
-        
-        # BEV 
+
+        # Optional auxiliary BEV segmentation head. Off unless a config asks
+        # for it, so the camera configs are untouched. Needs `semantic_mask`
+        # in the batch, i.e. RasterizeMap in the pipeline and 'semantic_mask'
+        # in Collect3D's keys.
+        self.aux_seg_head = (build_head(aux_seg_cfg)
+                             if aux_seg_cfg is not None else None)
+
+        # BEV
         self.bev_h = bev_h
         self.bev_w = bev_w
         self.roi_size = roi_size
@@ -84,6 +92,8 @@ class MapDiffusion(BaseMapperDiffuse):
                 pass
             if self.streaming_bev:
                 self.stream_fusion_neck.init_weights()
+            if self.aux_seg_head is not None:
+                self.aux_seg_head.init_weights()
 
     def update_bev_feature(self, curr_bev_feats, img_metas):
         '''
@@ -183,7 +193,8 @@ class MapDiffusion(BaseMapperDiffuse):
         return points[0].device, len(points)
 
     def forward_train(self, coef, total_steps, img=None, vectors=None, gts=None,
-                      img_metas=None, points=None, **kwargs):
+                      img_metas=None, points=None, semantic_mask=None,
+                      **kwargs):
         '''
         Args:
             img: torch.Tensor of shape [B, N, 3, H, W]
@@ -222,7 +233,17 @@ class MapDiffusion(BaseMapperDiffuse):
             img_metas=img_metas, 
             gts=gts,
             return_loss=True)
-        
+
+        # Auxiliary BEV segmentation, supervising the SAME tensor the
+        # detection head consumes, so the gradient reaches the encoder
+        # densely rather than only through matched polylines.
+        if self.aux_seg_head is not None:
+            assert semantic_mask is not None, (
+                'aux_seg_cfg is set but the batch has no semantic_mask; add '
+                "RasterizeMap to the pipeline and 'semantic_mask' to "
+                "Collect3D's keys")
+            loss_dict['aux_seg'] = self.aux_seg_head(bev_feats, semantic_mask)
+
         # format loss
         loss = 0.0
         for name, var in loss_dict.items():
