@@ -260,8 +260,7 @@ class BEVFormerBackbone(nn.Module):
         ``bev_embedding`` nor ``positional_encoding``. Those modules still
         exist so the class and config keep one shape across modalities.
 
-        Two geometry notes, both verified with tools/misc/probe_lidar_encoder.py
-        rather than assumed:
+        Two geometry notes, both measured rather than assumed:
 
         * No x/y transpose. This repo's stock mmdet3d 1.0.0rc6 + mmcv ops emit
           voxel coords as ``(batch, z, y, x)``, so ``SparseEncoder``'s dense
@@ -269,11 +268,34 @@ class BEVFormerBackbone(nn.Module):
           configs carry a ``permute(0, 1, 3, 2)`` because their vendored fork
           patched the CUDA kernel to emit ``(x, y, z)`` instead. CARLA's square
           tiles would hide a mistake here.
-        * The flip is required. ``SparseEncoder`` emits rows in increasing y,
-          while this repo's BEV convention is row 0 = y_max -- fixed by the
-          ``plane`` buffer in the mappers (``y = linspace(ymax, ymin, bev_h)``)
-          and by ``BEVFormerEncoder.get_reference_points``, which builds the
-          camera BEV the same way.
+
+        * No y flip either, and this one is subtle enough to have been got
+          wrong once. There are two BEV row conventions in this codebase and
+          they do NOT agree:
+
+            - the camera encoder writes row 0 = y_max
+              (``BEVFormerEncoder.get_reference_points`` uses
+              ``ys = linspace(H-0.5, 0.5, H)``, and the mappers' ``plane``
+              buffer matches it);
+            - the head READS row 0 = y_min. Its reference points are
+              ``VectorizeMap.normalize_line`` output, ``y_n = (y + roi/2) /
+              roi``, and ``CustomMSDeformableAttention`` feeds that straight
+              to ``grid_sample``, whose y axis indexes H ascending. Measured:
+              GT at y=-12 is read at row 1.5, y=+12 at row 97.5.
+
+          The camera path absorbs the mismatch because its BEV is a learned
+          rearrangement of image features -- the encoder simply learns to
+          write rows in whatever order the head reads them. A LiDAR BEV
+          cannot: it is a geometric projection, and a convolution is
+          translation-equivariant, so it cannot represent a global flip.
+          Matching the camera encoder here (which this code did at first)
+          therefore mirrors every prediction about the x axis.
+
+          ``SparseEncoder`` emits rows in ascending y, which is already what
+          the head reads, so the right thing is to leave it alone. Verified
+          on 60 test tiles by correlating the BEV rows holding road returns
+          against the rows holding GT, as the head indexes them: +0.31
+          unflipped vs -0.04 flipped, with unflipped better on 90% of tiles.
         """
         lidar_feat = self.extract_lidar_feat(points, img_metas=img_metas)
         bev = F.interpolate(
@@ -281,8 +303,7 @@ class BEVFormerBackbone(nn.Module):
             size=(self.bev_h, self.bev_w),
             mode='bicubic',
             align_corners=False)
-        bev = self.lidar_bev_proj([bev])
-        return torch.flip(bev, dims=[2]).contiguous()
+        return self.lidar_bev_proj([bev]).contiguous()
 
     def forward(self, img=None, img_metas=None, *args, points=None,
                 prev_bev=None, only_bev=False, **kwargs):
