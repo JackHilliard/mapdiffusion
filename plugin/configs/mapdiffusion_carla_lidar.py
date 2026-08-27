@@ -303,10 +303,10 @@ model = dict(
 lidar_pipeline = [
     dict(type='LoadCarlaPointsFromFile',
          coord_type='LIDAR',
-         # load_dim stays 4: the loader builds the strength column before
-         # selecting; use_dim=3 keeps only [x, y, z] -- see the
-         # in_channels=3 note on the SparseEncoder above.
-         load_dim=4,
+         # xyz only -- see the in_channels=3 note on the SparseEncoder
+         # above. With load_dim=3 the loader skips building the BT.709
+         # strength column entirely instead of building and discarding it.
+         load_dim=3,
          use_dim=3,
          z_max=lidar_z_max,
          ),
