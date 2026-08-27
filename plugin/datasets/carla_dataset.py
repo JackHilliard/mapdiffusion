@@ -182,7 +182,14 @@ class CarlaDataset(BaseMapDataset):
                   'inside extract_lidar_feat')
             return samples
 
-        min_points = max(int(check.get('min_points', 1) or 1), 1)
+        # This converter records the threshold as `min_points`; the sibling
+        # MapTRv2/PMT converters record it as `min_lidar_points`. Accept
+        # either so a shared pkl keeps its actual conversion threshold
+        # instead of silently falling back to 1.
+        min_points = check.get('min_points')
+        if min_points is None:
+            min_points = check.get('min_lidar_points')
+        min_points = max(int(min_points or 1), 1)
         kept, dropped = [], []
         for s in samples:
             n = s.get('num_lidar_points_in_range')
