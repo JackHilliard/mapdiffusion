@@ -127,6 +127,12 @@ class LoadCarlaPointsFromFile(object):
         self.coord_type = coord_type
         self.load_dim = load_dim
         self.use_dim = use_dim
+        # Whether any selected column needs the strength channel. When not
+        # (use_dim=3, the colour-free benchmark convention), the BT.709
+        # matmul over the full cloud -- up to 5M points/tile -- is skipped
+        # entirely rather than computed and then discarded by the use_dim
+        # selection, and every downstream copy is a column narrower.
+        self._need_strength = max(self.use_dim) >= 3
         self.z_max = z_max
         self._rgb2strength = np.array([0.2126, 0.7152, 0.0722],
                                       dtype=np.float32)
@@ -138,8 +144,12 @@ class LoadCarlaPointsFromFile(object):
         coord = features[:, 0:3]
         if tile_shift is not None:
             coord = coord - np.asarray(tile_shift, dtype=np.float32)
-        strength = (features[:, 3:6] @ self._rgb2strength).reshape([-1, 1])
-        points = np.concatenate([coord, strength], axis=1)
+        if self._need_strength:
+            strength = (features[:, 3:6]
+                        @ self._rgb2strength).reshape([-1, 1])
+            points = np.concatenate([coord, strength], axis=1)
+        else:
+            points = coord
         if self.z_max is not None:
             points = points[points[:, 2] <= self.z_max]
         return points

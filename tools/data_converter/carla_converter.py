@@ -577,7 +577,10 @@ def main():
         dict(
             samples=samples,
             split=args.split,
-            data_root=args.data_root,
+            # Absolute on purpose: every sample's lidar_path is relative to
+            # it, and CarlaDataset uses it as the join-base fallback when no
+            # raw_data_root is configured (matching the sibling repos).
+            data_root=os.path.abspath(args.data_root),
             # Geometry of the export these samples came from. CarlaDataset
             # asserts tile_radius against the config's roi_size, which is
             # what stops a 25m config being pointed at the 60m export.

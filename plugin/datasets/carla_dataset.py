@@ -40,8 +40,16 @@ class CarlaDataset(BaseMapDataset):
         test_mode (bool): whether in test mode
     """
 
-    def __init__(self, data_root, **kwargs):
+    def __init__(self, data_root, raw_data_root=None, **kwargs):
         self.data_root = data_root
+        # Join base for the pkl's relative lidar_path entries. None (the
+        # default) lets load_annotations prefer the data_root recorded in
+        # the pkl -- what lidar_path is actually relative to, and how the
+        # sibling MapTRv2/GeMap/PMT repos resolve it too -- falling back to
+        # data_root. Set it explicitly only when the tile export lives at a
+        # different path than at conversion time.
+        self._raw_data_root_arg = raw_data_root
+        self.pts_base = raw_data_root if raw_data_root is not None else data_root
         # Set by load_annotations(), which the base __init__ calls.
         self.ann_meta = {}
         super().__init__(**kwargs)
@@ -59,10 +67,20 @@ class CarlaDataset(BaseMapDataset):
         start_time = time()
         ann = mmcv.load(ann_file)
         self.ann_meta = {k: v for k, v in ann.items() if k != 'samples'}
+        self._adapt_ann_meta(ann_file)
+        # No explicit raw_data_root: prefer the data_root recorded in the
+        # pkl (what lidar_path is relative to) -- but only when it exists
+        # here, since a pkl converted on another machine (or in a container)
+        # records that machine's path.
+        pkl_root = self.ann_meta.get('data_root')
+        if self._raw_data_root_arg is None and pkl_root and \
+                osp.isdir(pkl_root):
+            self.pts_base = pkl_root
         # Sorted so a sample's position is a property of the data rather than
         # of the manifest's ordering: format_results() and the evaluator pair
         # predictions to samples positionally.
         samples = sorted(ann['samples'], key=lambda s: s['sample_idx'])
+        samples = [self._adapt_sample(s) for s in samples]
         n_loaded = len(samples)
         samples = self._filter_empty_lidar_tiles(samples)
         samples = samples[::self.interval]
@@ -70,6 +88,71 @@ class CarlaDataset(BaseMapDataset):
 
         print(f'collected {len(samples)} samples (of {n_loaded}) in '
               f'{(time() - start_time):.2f}s')
+
+    def _adapt_ann_meta(self, ann_file):
+        """Accept pkls from the sibling MapTRv2/GeMap converters.
+
+        Their schema differs from tools/data_converter/carla_converter.py's
+        only in bookkeeping: tile geometry nested under ``tile_geometry``
+        instead of top-level, and the annotation frame declared as
+        ``gt_frame`` (MapTRv2) / ``annotation_frame`` (GeMap). The GT arrays
+        themselves are interchangeable -- the MapTRv2 and GeMap converters
+        were verified upstream to emit bit-identical annotations, and this
+        converter's tile-centred frame matches their ``tile_center`` one.
+        A pkl in any other frame is refused: the GT would sit displaced from
+        the roi by up to ~17 m, silently.
+        """
+        geom = self.ann_meta.get('tile_geometry') or {}
+        for key in ('tile_radius', 'tile_side'):
+            if self.ann_meta.get(key) is None and geom.get(key) is not None:
+                self.ann_meta[key] = geom[key]
+        frame = (self.ann_meta.get('gt_frame')
+                 or self.ann_meta.get('annotation_frame'))
+        if frame is not None and frame != 'tile_center':
+            raise ValueError(
+                f'{ann_file}: annotation frame is {frame!r}, but this '
+                "dataset requires 'tile_center' -- reconvert with "
+                '--gt-frame tile_center')
+
+    @staticmethod
+    def _adapt_sample(sample):
+        """Fill the per-sample keys a sibling-repo pkl does not record.
+
+        ``tile_shift`` is what LoadCarlaPointsFromFile SUBTRACTS from the
+        stored (offset-frame) points, i.e. ``tile_center - offset``. GeMap's
+        ``recenter_shift`` is that same vector; MapTRv2's
+        ``lidar_recenter_shift`` is its negation (their loader ADDS it).
+        ``e2g_translation`` is the tile's world-frame centre --
+        ``annotation_origin`` in a tile_center-frame pkl. The remaining keys
+        are the static-tile placeholders this repo's own converter writes.
+        A sample that already has ``tile_shift`` is returned untouched.
+        """
+        if 'tile_shift' in sample:
+            return sample
+        sample = dict(sample)
+        if sample.get('recenter_shift') is not None:
+            sample['tile_shift'] = list(sample['recenter_shift'])
+        elif sample.get('lidar_recenter_shift') is not None:
+            sample['tile_shift'] = [
+                -v for v in sample['lidar_recenter_shift']
+            ]
+        else:
+            raise ValueError(
+                f"{sample.get('sample_idx')}: no tile_shift, recenter_shift "
+                'or lidar_recenter_shift recorded -- this pkl predates the '
+                'tile-centred frame and cannot be adapted')
+        sample.setdefault('token', sample['sample_idx'])
+        sample.setdefault('scene_name', sample['sample_idx'])
+        sample.setdefault('prev', -1)
+        sample.setdefault('next', -1)
+        if sample.get('e2g_translation') is None:
+            origin = sample.get('annotation_origin')
+            if origin is None:
+                center = list(sample.get('tile_center') or [])
+                origin = center + [0.0] * (3 - len(center))
+            sample['e2g_translation'] = list(origin)
+        sample.setdefault('e2g_rotation', [1.0, 0.0, 0.0, 0.0])
+        return sample
 
     def _filter_empty_lidar_tiles(self, samples):
         """Drop tiles that would voxelize to zero voxels.
@@ -99,7 +182,14 @@ class CarlaDataset(BaseMapDataset):
                   'inside extract_lidar_feat')
             return samples
 
-        min_points = max(int(check.get('min_points', 1) or 1), 1)
+        # This converter records the threshold as `min_points`; the sibling
+        # MapTRv2/PMT converters record it as `min_lidar_points`. Accept
+        # either so a shared pkl keeps its actual conversion threshold
+        # instead of silently falling back to 1.
+        min_points = check.get('min_points')
+        if min_points is None:
+            min_points = check.get('min_lidar_points')
+        min_points = max(int(min_points or 1), 1)
         kept, dropped = [], []
         for s in samples:
             n = s.get('num_lidar_points_in_range')
@@ -169,7 +259,10 @@ class CarlaDataset(BaseMapDataset):
             'sample_idx': sample['sample_idx'],
             'scene_name': sample['scene_name'],
             'town': sample.get('town'),
-            'pts_filename': osp.join(self.data_root, sample['lidar_path']),
+            # pts_base resolves to raw_data_root, the pkl's own recorded
+            # data_root, or data_root -- see __init__/load_annotations. The
+            # join is a no-op on the absolute paths old MapTRv2 pkls store.
+            'pts_filename': osp.join(self.pts_base, sample['lidar_path']),
             # LoadCarlaPointsFromFile subtracts this from features[:, 0:3] to
             # land in the same tile-centred frame as map_geoms above.
             'tile_shift': sample['tile_shift'],

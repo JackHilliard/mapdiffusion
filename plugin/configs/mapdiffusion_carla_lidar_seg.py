@@ -137,10 +137,14 @@ model = dict(
                 max_voxels=[90000, 120000]),  # [train, test]
             backbone=dict(
                 type='SparseEncoder',
-                # CARLA points are xyz + strength, where strength is the
-                # BT.709 luma of the per-point RGB the exporter stores
-                # (not nuScenes' xyz+intensity+ring=5).
-                in_channels=4,
+                # xyz only. CARLA points also carry a "strength" channel
+                # (BT.709 luma of the per-point RGB), but it is dropped via
+                # use_dim=3 in lidar_pipeline below to match the MapTRv2 30m
+                # HM benchmark convention, which trains colour-free. This
+                # value and that use_dim MUST move together -- a mismatch
+                # fails at the first sparse conv. sparse_shape and
+                # lidar_bev_proj do not depend on the input channel width.
+                in_channels=3,
                 # (nz, ny, nx), derived above. This order, and the
                 # encoder_paddings below putting the odd padding on the z
                 # axis, follow from stock mmdet3d/mmcv emitting voxel coords
@@ -325,8 +329,11 @@ model = dict(
 lidar_pipeline = [
     dict(type='LoadCarlaPointsFromFile',
          coord_type='LIDAR',
-         load_dim=4,
-         use_dim=4,
+         # xyz only -- see the in_channels=3 note on the SparseEncoder
+         # above. With load_dim=3 the loader skips building the BT.709
+         # strength column entirely instead of building and discarding it.
+         load_dim=3,
+         use_dim=3,
          z_max=lidar_z_max,
          ),
     # Collapses each tile's raw points to one per voxel cell before the
