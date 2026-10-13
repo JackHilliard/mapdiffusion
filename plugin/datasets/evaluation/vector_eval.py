@@ -75,6 +75,10 @@ class VectorEvaluate(object):
         # exactly that case -- both 25x25, both labelled 'nusc' by the guess
         # above.
         stem = os.path.splitext(os.path.basename(self.dataset.ann_file))[0]
+        # A manifest-driven dataset (Carla50mCropDataset) has no distinctive
+        # ann_file basename -- every export's is `manifest` -- and its GT
+        # depends on the crop seed, so it names its own cache key.
+        stem = getattr(self.dataset, 'gt_cache_stem', stem)
         if self.new_split:
             tmp_file = f'./tmp_gts_{dataset}_{stem}_{roi_size[0]}x{roi_size[1]}_newsplit.pkl'
         else:
