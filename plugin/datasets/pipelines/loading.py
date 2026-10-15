@@ -172,6 +172,95 @@ class LoadCarlaPointsFromFile(object):
 
 
 @PIPELINES.register_module(force=True)
+class LoadCarla50mCrop(object):
+    """Load a 50 m block and apply the SAME crop pose the GT was cropped with.
+
+    Counterpart of ``Carla50mCropDataset`` (``plugin/datasets/
+    carla50m_crop_dataset.py``) and a port of the sibling MapTRv2 loader of
+    the same name. The pose is drawn once in ``Carla50mCropDataset.get_sample``
+    and passed through ``results``; drawing it here independently would
+    silently decouple the points from their labels.
+
+    Reads the block's WORLD-frame ``points`` (not the offset-frame
+    ``features``), rotates/shifts them about the tile centre into the crop
+    frame, keeps the ``+-crop_half`` square, adds ``crop_noise_std`` Gaussian
+    noise (train), and re-zeroes z on the crop's own ground (``crop_z_pct``
+    percentile) so the network sees a consistent vertical frame across tiles
+    of differing elevation. There is no ``tile_shift`` and no ``z_max`` cut:
+    the crop centre is the origin by construction and the crop's z is
+    ground-relative.
+
+    ``load_dim``/``use_dim`` follow ``LoadCarlaPointsFromFile``: the default
+    3/3 is the colour-free convention (xyz only; ``features`` is never read);
+    ``load_dim=4, use_dim=4`` appends the BT.709 strength channel. Whatever
+    is chosen must match the model's ``SparseEncoder.in_channels``.
+    """
+
+    def __init__(self, coord_type='LIDAR', load_dim=3, use_dim=3):
+        if isinstance(use_dim, int):
+            use_dim = list(range(use_dim))
+        assert max(use_dim) < load_dim, \
+            f'Expect all used dimensions < {load_dim}, got {use_dim}'
+        assert coord_type in ['CAMERA', 'LIDAR', 'DEPTH']
+        self.coord_type = coord_type
+        self.load_dim = load_dim
+        self.use_dim = use_dim
+        self._need_strength = max(self.use_dim) >= 3
+        self._rgb2strength = np.array([0.2126, 0.7152, 0.0722],
+                                      dtype=np.float32)
+
+    def __call__(self, results):
+        mmcv.check_file_exist(results['pts_filename'])
+        with np.load(results['pts_filename']) as d:
+            world = d['points'].astype(np.float64)   # (N,3) world-absolute
+            rgb = (d['features'][:, 3:6].astype(np.float32)
+                   if self._need_strength else None)
+
+        centre = results['crop_centre']
+        R = results['crop_R']
+        shift = results['crop_shift']
+        half = results['crop_half']
+
+        local = (world[:, :2] - centre) @ R.T - shift
+        keep = (np.abs(local[:, 0]) <= half) & (np.abs(local[:, 1]) <= half)
+
+        n = int(keep.sum())
+        xyz = np.empty((n, 3), dtype=np.float32)
+        xyz[:, :2] = local[keep].astype(np.float32)
+        xyz[:, 2] = world[keep, 2].astype(np.float32)
+
+        std = float(results.get('crop_noise_std', 0.0))
+        if std > 0 and n:
+            xy_only = bool(results.get('crop_noise_xy_only', False))
+            noise = np.random.normal(
+                0.0, std, size=(n, 2 if xy_only else 3)).astype(np.float32)
+            xyz[:, :2] += noise[:, :2]
+            if not xy_only:
+                xyz[:, 2] += noise[:, 2]
+
+        # ground-relative z, per crop
+        if n:
+            xyz[:, 2] -= np.percentile(xyz[:, 2],
+                                       float(results.get('crop_z_pct', 2.0)))
+
+        if self._need_strength:
+            strength = (rgb[keep] @ self._rgb2strength).reshape(-1, 1)
+            points = np.concatenate([xyz, strength], axis=1)
+        else:
+            points = xyz
+        points = points[:, self.use_dim]
+
+        points_class = get_points_type(self.coord_type)
+        results['points'] = points_class(
+            points, points_dim=points.shape[-1], attribute_dims=None)
+        return results
+
+    def __repr__(self):
+        return (f'{self.__class__.__name__}(coord_type={self.coord_type}, '
+                f'load_dim={self.load_dim}, use_dim={self.use_dim})')
+
+
+@PIPELINES.register_module(force=True)
 class GridSamplePoints(object):
     """Keep one representative point per occupied ``grid_size`` cell, via
     integer coordinate packing plus a single 1D ``torch.unique`` (vectorized,
