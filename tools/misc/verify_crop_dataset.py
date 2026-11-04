@@ -29,17 +29,21 @@ import plugin  # noqa: F401  (registers the dataset and pipelines)
 from plugin.datasets.pipelines.loading import LoadCarla50mCrop
 
 
-def build(cfg, key, data_root, split=None):
+def build(cfg, key, data_root, split=None, ann_file=None):
     d = dict(cfg.data[key])
     d['pipeline'] = []
     d.pop('eval_config', None)
     d['test_mode'] = False
     if split:
         d['split'] = split
-    if data_root or split:
+    if (data_root or split) and d.get('split'):   # CARLA <split>/ layout
         data_root = data_root or d['data_root']
         d['data_root'] = data_root
         d['ann_file'] = f"{data_root.rstrip('/')}/{d['split']}/manifest.json"
+    elif data_root:
+        d['data_root'] = data_root
+    if ann_file:                      # flat exports (San Jose) take it directly
+        d['ann_file'] = ann_file
     return build_dataset(d)
 
 
@@ -48,6 +52,10 @@ def main():
     ap.add_argument('config')
     ap.add_argument('--data-root', default=None,
                     help='override the config\'s data_root (export root)')
+    ap.add_argument('--ann-file-train', default=None,
+                    help='override data.train.ann_file (e.g. a San Jose split json)')
+    ap.add_argument('--ann-file-val', default=None,
+                    help='override data.val.ann_file')
     ap.add_argument('--n', type=int, default=40, help='crops to sample')
     ap.add_argument('--train-split', default=None,
                     help='split to draw the TRAIN-mode crops from (default: '
@@ -59,8 +67,8 @@ def main():
     labels = sorted(cat2id.values())
 
     print('=' * 78 + '\n1. BUILD\n' + '=' * 78)
-    tr = build(cfg, 'train', args.data_root, args.train_split)
-    te = build(cfg, 'val', args.data_root)
+    tr = build(cfg, 'train', args.data_root, args.train_split, args.ann_file_train)
+    te = build(cfg, 'val', args.data_root, ann_file=args.ann_file_val)
     print(f'  train: {len(tr)} samples   val: {len(te)} samples   '
           f'classes: {cat2id}')
     print(f'  train max_shift={tr.max_shift:.3f} m  need={tr._need:.3f} m')

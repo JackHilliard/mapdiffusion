@@ -22,3 +22,6 @@ work_dirs/
 
 # Docs / misc not needed for the build
 resources/
+
+# Claude Code worktrees
+.claude/
