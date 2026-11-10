@@ -50,6 +50,7 @@ bookkeeping in ``CarlaDataset`` (schema adaptation, zero-voxel filter,
 import json
 import os
 import os.path as osp
+import warnings
 from time import time
 from typing import List
 
@@ -58,6 +59,7 @@ from mmdet.datasets import DATASETS
 from shapely.geometry import LineString
 
 from .base_dataset import BaseMapDataset
+from .pipelines.loading import EmptyLidarTileError
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +181,7 @@ class Carla50mCropDataset(BaseMapDataset):
                  reference_dir='reference_lines',
                  z_ground_percentile=2.0,
                  crop_seed=None,
+                 min_crop_points=0,
                  cat2id=None,
                  roi_size=None,
                  **kwargs):
@@ -198,6 +201,7 @@ class Carla50mCropDataset(BaseMapDataset):
         self.min_polyline_len = float(min_polyline_len)
         self.z_ground_percentile = float(z_ground_percentile)
         self.crop_seed = crop_seed
+        self.min_crop_points = min_crop_points   # resolved in load_annotations
         if not np.allclose(np.asarray(roi_size, dtype=np.float64),
                            (float(crop_size), float(crop_size))):
             raise ValueError(
@@ -239,10 +243,33 @@ class Carla50mCropDataset(BaseMapDataset):
         return (f'carla50m_crop_{export}_{self.split}_{self.reference_dir}'
                 f'_seed{self.crop_seed}_n{len(self.samples)}')
 
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _resolve_min_points(value, man, ann_file, name='min_crop_points'):
+        """``value`` as an int; ``'manifest'`` reads ``filters.min_points``.
+
+        The export was tiled with ``filters.min_points`` raw points per 50 m
+        tile (20000 for ``san_jose_tiles_50m``); the dataloader's floor on a
+        freshly drawn train crop is that same number, read from the manifest
+        instead of being copied into every config. ``0`` disables the check.
+        """
+        if isinstance(value, str):
+            if value != 'manifest':
+                raise ValueError(
+                    f"{name} must be an int or 'manifest', got {value!r}")
+            value = (man.get('filters') or {}).get('min_points')
+            if value is None:
+                raise ValueError(
+                    f'{ann_file}: {name}="manifest" but the manifest has no '
+                    f'filters.min_points entry')
+        return int(value)
+
     def load_annotations(self, ann_file):
         start = time()
         with open(ann_file) as f:
             man = json.load(f)
+        self.min_crop_points = self._resolve_min_points(
+            self.min_crop_points, man, ann_file)
         tiles = man.get('tiles', [])
         entries = [t if isinstance(t, dict) else {'name': t} for t in tiles]
         if not entries:
@@ -450,6 +477,44 @@ class Carla50mCropDataset(BaseMapDataset):
             geoms[lbl].append(LineString(q))
         return geoms
 
+    # How many consecutive train samples __getitem__ may skip before it
+    # gives up: past this, min_crop_points / point_cloud_range or the split
+    # lists are wrong, not the data.
+    MAX_CONSECUTIVE_SKIPS = 100
+
+    def __getitem__(self, idx):
+        """Train: resample when the fresh crop has no GT or too few points.
+
+        ``BaseMapDataset.__getitem__`` has no retry, so an
+        ``EmptyLidarTileError`` from ``LoadCarla50mCrop`` (fewer than
+        ``min_crop_points`` raw points in the crop -- real LiDAR has coverage
+        gaps) or ``GridSamplePoints`` (nothing in range) would take the
+        DataLoader worker and the run down, at a random step.
+        A crop that holds no GT after ``_draw_crop``'s aiming gave up is
+        skipped the same way (the mmdet siblings' ``filter_empty_gt``).
+        Frozen (seeded) splits are never skipped: their crops are guaranteed
+        >= 1000 points and non-empty by the split finaliser, and skipping
+        would silently shrink the eval set.
+        """
+        if 'crop_R' in self.samples[idx]:
+            return super().__getitem__(idx)
+        for _ in range(self.MAX_CONSECUTIVE_SKIPS + 1):
+            input_dict = self.get_sample(idx)
+            if not any(input_dict['map_geoms'].values()):
+                reason = 'no GT in crop'
+            else:
+                try:
+                    return self.pipeline(input_dict)
+                except EmptyLidarTileError as e:
+                    reason = str(e)
+            warnings.warn(f'{self.__class__.__name__}: skipping sample '
+                          f'{input_dict["token"]} -- {reason}')
+            idx = int(np.random.randint(len(self.samples)))
+        raise RuntimeError(
+            f'{self.__class__.__name__}: {self.MAX_CONSECUTIVE_SKIPS} '
+            'consecutive train samples skipped (no GT / too few points); '
+            'check min_crop_points, point_cloud_range and the split lists.')
+
     def get_sample(self, idx):
         sample = self.samples[idx]
         name = sample['token']
@@ -483,4 +548,7 @@ class Carla50mCropDataset(BaseMapDataset):
             'crop_noise_std': self.noise_std,
             'crop_noise_xy_only': self.noise_xy_only,
             'crop_z_pct': self.z_ground_percentile,
+            # train-only raw-point floor, enforced by LoadCarla50mCrop;
+            # frozen (val/test) crops are never skipped
+            'crop_min_points': 0 if 'crop_R' in sample else self.min_crop_points,
         }

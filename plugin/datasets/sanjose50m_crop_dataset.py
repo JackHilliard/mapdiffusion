@@ -50,11 +50,13 @@ class SanJose50mCropDataset(Carla50mCropDataset):
     (``split`` must be empty / None); ``ann_file`` a split json from
     ``san_jose_splits_v1``; ``gt_classes`` defaults to ``('curb',)``;
     ``check_finalize`` (default True) compares the manifest's ``finalize``
-    block with the crop kwargs.
+    block with the crop kwargs; ``min_crop_points`` defaults to
+    ``'manifest'`` = the export's ``filters.min_points`` (20000 raw points a
+    fresh train crop must hold, else it is skipped; frozen crops exempt).
     """
 
     def __init__(self, data_root, ann_file, split=None, gt_classes=None,
-                 check_finalize=True, **kwargs):
+                 check_finalize=True, min_crop_points='manifest', **kwargs):
         if split:
             raise ValueError(
                 f'{self.__class__.__name__}: the San Jose export is flat '
@@ -63,7 +65,8 @@ class SanJose50mCropDataset(Carla50mCropDataset):
         self.check_finalize = bool(check_finalize)
         self.finalize = {}
         super().__init__(data_root=data_root, ann_file=ann_file, split='',
-                         gt_classes=gt_classes or SANJOSE_GT_CLASSES, **kwargs)
+                         gt_classes=gt_classes or SANJOSE_GT_CLASSES,
+                         min_crop_points=min_crop_points, **kwargs)
 
     @property
     def gt_cache_stem(self):
@@ -84,6 +87,8 @@ class SanJose50mCropDataset(Carla50mCropDataset):
             if missing:
                 raise ValueError(f'{ann_file}: gt_classes {missing} not in '
                                  f'the export class_lookup {lookup}')
+        self.min_crop_points = self._resolve_min_points(
+            self.min_crop_points, man, ann_file)
         tiles = man.get('tiles', [])
         entries = [t if isinstance(t, dict) else {'name': t} for t in tiles]
         if not entries:

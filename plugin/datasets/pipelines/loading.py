@@ -225,6 +225,13 @@ class LoadCarla50mCrop(object):
         keep = (np.abs(local[:, 0]) <= half) & (np.abs(local[:, 1]) <= half)
 
         n = int(keep.sum())
+        need = int(results.get('crop_min_points', 0) or 0)
+        if n < need:
+            # Train-only floor set by the dataset (San Jose: the manifest's
+            # filters.min_points); the dataset catches this and resamples.
+            raise EmptyLidarTileError(
+                f'tile {results.get("sample_idx")}: {n} raw point(s) in the '
+                f'{2 * half:g} m crop (need >= {need})')
         xyz = np.empty((n, 3), dtype=np.float32)
         xyz[:, :2] = local[keep].astype(np.float32)
         xyz[:, 2] = world[keep, 2].astype(np.float32)
