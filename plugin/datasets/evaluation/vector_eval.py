@@ -83,9 +83,19 @@ class VectorEvaluate(object):
             tmp_file = f'./tmp_gts_{dataset}_{stem}_{roi_size[0]}x{roi_size[1]}_newsplit.pkl'
         else:
             tmp_file = f'./tmp_gts_{dataset}_{stem}_{roi_size[0]}x{roi_size[1]}.pkl'
+        # A dataset may name its GT cache itself (Hrdx50mDataset.map_ann_file) and
+        # may verify a cache before it is used: an existing file is otherwise
+        # trusted blindly, and a stale one silently scores against the wrong GT.
+        cache_file = getattr(self.dataset, 'gt_cache_file', None)
+        if cache_file:
+            tmp_file = cache_file
         if os.path.exists(tmp_file):
             print(f'loading cached gts from {tmp_file}')
             gts = mmcv.load(tmp_file)
+            check = getattr(self.dataset, 'check_gt_cache', None)
+            if check is not None:
+                check(gts, tmp_file)
+                print(f'GT cache content matches the dataset ({len(gts)} samples)')
             return gts
         
         print('collecting gts...')
@@ -102,7 +112,14 @@ class VectorEvaluate(object):
         
         if not os.path.exists(tmp_file):
             print(f"saving gt to {tmp_file}")
-            mmcv.dump(gts, tmp_file)
+            # atomic: write next to the target, then rename (a killed job must
+            # not leave a truncated cache that the next run loads). The temp
+            # name keeps the extension because mmcv.dump infers the format.
+            os.makedirs(os.path.dirname(os.path.abspath(tmp_file)), exist_ok=True)
+            root, ext = os.path.splitext(tmp_file)
+            part = f'{root}.tmp{os.getpid()}{ext}'
+            mmcv.dump(gts, part)
+            os.replace(part, tmp_file)
         return gts
     
     def interp_fixed_num(self, 

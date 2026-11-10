@@ -19,6 +19,9 @@ class VectorizeMap(object):
             and `sample_dist` will be ignored.
         sample_num (int): number of points to interpolate from a polyline. Set to -1 to ignore.
         sample_dist (float): interpolate distance. Set to -1 to ignore.
+        simplify_tolerance (float): Douglas-Peucker tolerance (m) of `simplify`. The
+            default 0.2 is this repo's historical value; 0 keeps every GT vertex (the
+            HRDX benchmark scores against the unsimplified ground truth).
     """
 
     def __init__(self, 
@@ -28,7 +31,8 @@ class VectorizeMap(object):
                  simplify: bool=False, 
                  sample_num: int=-1, 
                  sample_dist: float=-1, 
-                 permute: bool=False
+                 permute: bool=False,
+                 simplify_tolerance: float=0.2
         ):
         self.coords_dim = coords_dim
         self.sample_num = sample_num
@@ -37,6 +41,7 @@ class VectorizeMap(object):
         self.normalize = normalize
         self.simplify = simplify
         self.permute = permute
+        self.simplify_tolerance = float(simplify_tolerance)
 
         if sample_dist > 0:
             assert sample_num < 0 and not simplify
@@ -101,7 +106,11 @@ class VectorizeMap(object):
             for geom in geom_list:
                 if geom.geom_type == 'LineString':
                     if self.simplify:
-                        line = geom.simplify(0.2, preserve_topology=True)
+                        if self.simplify_tolerance > 0:
+                            line = geom.simplify(self.simplify_tolerance,
+                                                 preserve_topology=True)
+                        else:
+                            line = geom
                         line = np.array(line.coords)
                     else:
                         line = self.sample_fn(geom)

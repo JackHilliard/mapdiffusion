@@ -27,6 +27,73 @@ from mmdet.apis import set_random_seed
 from mmseg import __version__ as mmseg_version
 from mmcv.utils import TORCH_VERSION, digit_version
 
+
+def apply_epoch_schedule(cfg, num_train, logger=None):
+    """Derive the IterBasedRunner's iteration counts from an epoch schedule.
+
+    This repo trains with ``IterBasedRunner`` (its infinite batch sampler needs it), so
+    epochs, evaluation and checkpoint intervals are iteration counts that depend on the
+    train-set size and the batch size. A config may instead carry::
+
+        epoch_schedule = dict(num_epochs=16, eval_every=2, ckpt_every=1,
+                              effective_batch=16, warmup_samples=8000)
+
+    and this function, called once the train set is built, sets with
+    ``bs = data.samples_per_gpu * number of GPUs`` and ``cum = effective_batch // bs``::
+
+        iters/epoch              = ceil(num_train / effective_batch) * cum
+        runner.max_iters         = num_epochs * iters/epoch
+        evaluation.interval      = eval_every * iters/epoch
+        checkpoint_config.interval = ckpt_every * iters/epoch
+        lr_config.warmup_iters   = ceil(warmup_samples / bs)
+        optimizer_config         -> GradientCumulativeOptimizerHook(cumulative_iters=cum)
+                                    when cum > 1 (grad_clip kept)
+
+    so ``--cfg-options epoch_schedule.num_epochs=E data.samples_per_gpu=B`` keeps the
+    schedule and the effective batch consistent. Configs without ``epoch_schedule`` are
+    untouched. Returns the derived values (or None).
+    """
+    import math
+    es = cfg.get('epoch_schedule', None)
+    if not es:
+        return None
+    if cfg.runner['type'] != 'IterBasedRunner':
+        raise ValueError('epoch_schedule is for IterBasedRunner configs')
+    bs = int(cfg.data.samples_per_gpu) * max(1, len(cfg.gpu_ids))
+    eff = int(es.get('effective_batch', bs))
+    if eff % bs:
+        raise ValueError(
+            f'epoch_schedule.effective_batch={eff} is not a multiple of the batch per '
+            f'iteration ({cfg.data.samples_per_gpu} per GPU x {len(cfg.gpu_ids)} GPU(s) = {bs})')
+    cum = eff // bs
+    ipe = int(math.ceil(num_train / float(eff))) * cum
+    num_epochs = int(es['num_epochs'])
+    cfg.runner.max_iters = num_epochs * ipe
+    if cfg.get('evaluation', None) is not None:
+        cfg.evaluation.interval = int(es.get('eval_every', 1)) * ipe
+    if cfg.get('checkpoint_config', None) is not None:
+        cfg.checkpoint_config.interval = int(es.get('ckpt_every', 1)) * ipe
+    if es.get('warmup_samples', None) is not None and cfg.get('lr_config', None) is not None:
+        cfg.lr_config.warmup_iters = max(1, int(math.ceil(es['warmup_samples'] / float(bs))))
+    # gradient accumulation follows the batch actually used, whatever the config file wrote
+    oc = dict(cfg.get('optimizer_config', None) or {})
+    if cum > 1:
+        oc['type'] = 'GradientCumulativeOptimizerHook'
+        oc['cumulative_iters'] = cum
+    elif oc.get('type', None) == 'GradientCumulativeOptimizerHook':
+        oc.pop('type')
+        oc.pop('cumulative_iters', None)
+    cfg.optimizer_config = oc
+    out = dict(num_train=int(num_train), batch_per_iter=bs, cumulative_iters=cum,
+               effective_batch=eff, iters_per_epoch=ipe, max_iters=cfg.runner.max_iters,
+               eval_interval=cfg.get('evaluation', {}).get('interval', None),
+               ckpt_interval=(cfg.get('checkpoint_config', None) or {}).get('interval', None),
+               warmup_iters=(cfg.get('lr_config', None) or {}).get('warmup_iters', None))
+    msg = f'epoch_schedule {dict(es)} -> {out}'
+    logger.info(msg) if logger is not None else print(msg)
+    return out
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Train MapDiffusion')
     parser.add_argument('config', help='train config file path')
@@ -253,6 +320,11 @@ def main():
     cfg.data.train.work_dir = cfg.work_dir
     cfg.data.val.work_dir = cfg.work_dir
     datasets = [build_dataset(cfg.data.train)]
+    # epochs -> iterations, once the train-set size is known (no-op without
+    # cfg.epoch_schedule); the dumped config is refreshed with the result
+    if apply_epoch_schedule(cfg, len(datasets[0]), logger) is not None:
+        cfg.dump(osp.join(cfg.work_dir, osp.basename(args.config)))
+        meta['config'] = cfg.pretty_text
     if len(cfg.workflow) == 2:
         val_dataset = copy.deepcopy(cfg.data.val)
         # in case we use a dataset wrapper
