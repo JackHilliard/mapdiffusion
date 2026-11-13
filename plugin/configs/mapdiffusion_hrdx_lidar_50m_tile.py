@@ -28,7 +28,19 @@ MAPDIFFUSION SPECIFICS (not benchmark):
 
   model     MapDiffusion / BEVFormerBackbone(modality='lidar') / MapDetectorHeadDiffuse,
             100 queries x 20 points, FocalLoss 5 + LinesL1Loss 50, HungarianLinesAssigner,
-            1000-step cosine diffusion, ConvGRU streaming fusion -- all unchanged.
+            1000-step cosine diffusion, ConvGRU streaming fusion -- unchanged except:
+  refine    predict_refine=True (the repo's configs: False). Each decoder layer predicts its
+            lines as offsets from its reference points, so a query that starts near a line
+            stays on it. With False, the head ignored its (noisy-GT) query geometry: on 4 HRDX
+            tiles a query started 0.16 m from a GT line ended 10-30 m away, the loss was the
+            same at every diffusion step, and AP stayed ~0. With True, the error rises with
+            the diffusion step as it should. MapTracker (the same decoder) needs the same.
+  ref init  zero_init_ref_offset=True: the learned offset added to each noisy query line
+            before the decoder starts at 0 instead of at up to +-0.4 roi (+-20 m here);
+            on the same 4 tiles after 2400 iterations a query started on its GT line ended
+            1.4 m away instead of 2.2 m.
+  LiDAR BEV row 0 = y_max, as the decoder reads it (BEVFormerBackbone.forward_lidar; the
+            backbone had it mirrored from 2026-08-13 until this fix).
             Only what the data forces differs from the San Jose crop config:
             roi_size (50, 50); BEV 168 x 168 (the repo's native 0.3 m cell, 100 cells per 30 m,
             scaled to 50 m: 166.7 -> 168); sparse_shape [420, 500, 500]; SparseEncoder
@@ -232,7 +244,9 @@ model = dict(
     ),
     head_cfg=dict(
         num_classes=num_class,
-        roi_size=roi_size),
+        roi_size=roi_size,
+        predict_refine=True,            # see 'refine' above
+        zero_init_ref_offset=True),     # see 'ref init' above
     streaming_cfg=dict(batch_size=batch_size),
 )
 

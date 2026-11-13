@@ -269,33 +269,30 @@ class BEVFormerBackbone(nn.Module):
           patched the CUDA kernel to emit ``(x, y, z)`` instead. CARLA's square
           tiles would hide a mistake here.
 
-        * No y flip either, and this one is subtle enough to have been got
-          wrong once. There are two BEV row conventions in this codebase and
-          they do NOT agree:
+        * A y flip IS required (row 0 = y_max), and this one has been got wrong once
+          (commit ce153fc removed the flip). Both ends, measured end to end on an HRDX tile
+          (submit_scripts' mapdiffusion BEV-row probe):
 
-            - the camera encoder writes row 0 = y_max
-              (``BEVFormerEncoder.get_reference_points`` uses
-              ``ys = linspace(H-0.5, 0.5, H)``, and the mappers' ``plane``
-              buffer matches it);
-            - the head READS row 0 = y_min. Its reference points are
-              ``VectorizeMap.normalize_line`` output, ``y_n = (y + roi/2) /
-              roi``, and ``CustomMSDeformableAttention`` feeds that straight
-              to ``grid_sample``, whose y axis indexes H ascending. Measured:
-              GT at y=-12 is read at row 1.5, y=+12 at row 97.5.
+            - the head READS row 0 = y_max. Its query lines are ``VectorizeMap``
+              output, ``y_n = (y + roi/2) / roi``, but ``MapTransformerDecoderDiffuse``
+              reverses y (``tmp[..., 1] = 1 - y``) before ``CustomMSDeformableAttention``:
+              a query at y = +10.6 m (y_n 0.715) is read at row 38.6 of 168. (ce153fc
+              measured the attention on its own, without the decoder's reversal, and so
+              got the opposite answer.) The camera encoder writes the same order
+              (``BEVFormerEncoder.get_reference_points``: ``ys = linspace(H-0.5, 0.5,
+              H)``), and the mappers' ``plane`` buffer, which warps the streaming
+              memory, assumes it too.
+            - ``SparseEncoder`` emits rows in ASCENDING y (row 0 = y_min): the BEV's
+              per-row activation correlates +0.83 with the tile's point density by
+              ascending y, -0.67 by descending y.
 
-          The camera path absorbs the mismatch because its BEV is a learned
-          rearrangement of image features -- the encoder simply learns to
-          write rows in whatever order the head reads them. A LiDAR BEV
-          cannot: it is a geometric projection, and a convolution is
-          translation-equivariant, so it cannot represent a global flip.
-          Matching the camera encoder here (which this code did at first)
-          therefore mirrors every prediction about the x axis.
-
-          ``SparseEncoder`` emits rows in ascending y, which is already what
-          the head reads, so the right thing is to leave it alone. Verified
-          on 60 test tiles by correlating the BEV rows holding road returns
-          against the rows holding GT, as the head indexes them: +0.31
-          unflipped vs -0.04 flipped, with unflipped better on 90% of tiles.
+          Unflipped, every query reads the BEV at its mirror image about the x axis.
+          A LiDAR BEV cannot learn its way out of that (a geometric projection through
+          translation-equivariant convolutions cannot represent a global flip), and the
+          head learns to ignore its query geometry: on 4 HRDX tiles, a query started
+          0.16 m from a GT line ended 10-30 m away, and the loss was the same at every
+          diffusion step. MapTracker's LiDAR branch (the same decoder) flips for the
+          same reason.
         """
         lidar_feat = self.extract_lidar_feat(points, img_metas=img_metas)
         bev = F.interpolate(
@@ -303,7 +300,8 @@ class BEVFormerBackbone(nn.Module):
             size=(self.bev_h, self.bev_w),
             mode='bicubic',
             align_corners=False)
-        return self.lidar_bev_proj([bev]).contiguous()
+        bev = self.lidar_bev_proj([bev])
+        return torch.flip(bev, dims=[2]).contiguous()     # row 0 = y_max (see above)
 
     def forward(self, img=None, img_metas=None, *args, points=None,
                 prev_bev=None, only_bev=False, **kwargs):

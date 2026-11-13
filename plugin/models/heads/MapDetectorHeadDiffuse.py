@@ -96,6 +96,7 @@ class MapDetectorHeadDiffuse(nn.Module):
                  roi_size=(60, 30),
                  different_heads=True,
                  predict_refine=False,
+                 zero_init_ref_offset=False,
                  bev_pos=None,
                  sync_cls_avg_factor=True,
                  bg_cls_weight=0.,
@@ -112,6 +113,7 @@ class MapDetectorHeadDiffuse(nn.Module):
         self.embed_dims = embed_dims
         self.different_heads = different_heads
         self.predict_refine = predict_refine
+        self.zero_init_ref_offset = zero_init_ref_offset
         self.bev_pos = bev_pos
         self.num_points = num_points
         self.coord_dim = coord_dim
@@ -150,6 +152,15 @@ class MapDetectorHeadDiffuse(nn.Module):
                 nn.init.xavier_uniform_(p)
         
         self.transformer.init_weights()
+
+        # The offset added to each query's noisy line before the decoder is
+        # sigmoid(reference_points(.)) * 2 - 1, in units of the whole roi. Xavier-initialised
+        # it starts at up to ~+-0.4 roi (+-20 m on a 50 m tile) and is unlearnt only slowly:
+        # after 2400 iterations on 4 HRDX tiles it still moved a query started on its GT line
+        # 3.6 m away. Zero-initialised, the offset starts at exactly 0 (sigmoid(0) * 2 - 1).
+        if self.zero_init_ref_offset:
+            nn.init.zeros_(self.reference_points.weight)
+            nn.init.zeros_(self.reference_points.bias)
 
         # init prediction branch
         for m in self.reg_branches:
