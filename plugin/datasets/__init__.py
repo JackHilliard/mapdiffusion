@@ -5,3 +5,4 @@ from .carla_dataset import CarlaDataset
 from .carla50m_crop_dataset import Carla50mCropDataset
 from .sanjose50m_crop_dataset import SanJose50mCropDataset
 from .hrdx50m_dataset import Hrdx50mDataset, LoadHrdx50mTile
+from .carla3cls50m_dataset import Carla3cls50mDataset, LoadCarla3cls50mTile
